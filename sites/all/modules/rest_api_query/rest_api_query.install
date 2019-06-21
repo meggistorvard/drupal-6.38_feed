@@ -1,0 +1,32 @@
+<?php
+/**
+ * @file
+ * Install hooks and managment of the database schema.
+ */
+
+
+/**
+ * Implements hook_install().
+ */
+function rest_api_query_install() {
+  drupal_install_schema('rest_api_query');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function rest_api_query_uninstall() {
+  drupal_uninstall_schema('rest_api_query');
+}
+
+/**
+ * Implements hook_schema().
+ */
+function rest_api_query_schema() {
+  $schema = array();
+
+  $schema['cache_rest_api_query'] = drupal_get_schema_unprocessed('system', 'cache');
+  $schema['cache_rest_api_query']['description'] = 'Cache table for the REST API Query module to store responses from REST APIs.';
+
+  return $schema;
+}

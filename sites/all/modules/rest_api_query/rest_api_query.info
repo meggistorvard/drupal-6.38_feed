@@ -1,0 +1,14 @@
+name = 'REST API Query'
+description = 'Exposes a class and functions that help consume RESTful APIs.'
+package = Web Services
+core = 6.x
+
+; json_encode() & json_decode() are only fully supported in PHP 5.2+
+php = 5.2
+
+; Information added by drupal.org packaging script on 2011-11-30
+version = "6.x-1.0"
+core = "6.x"
+project = "rest_api_query"
+datestamp = "1322686543"
+

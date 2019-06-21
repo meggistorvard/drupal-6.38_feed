@@ -1,0 +1,13 @@
+name = REST Server
+description = Provides an REST server.
+package = Web Services
+dependencies[] = services
+dependencies[] = inputstream
+dependencies[] = autoload
+core = 6.x
+; Information added by drupal.org packaging script on 2013-10-01
+version = "6.x-3.x-dev"
+core = "6.x"
+project = "rest_server"
+datestamp = "1380625867"
+

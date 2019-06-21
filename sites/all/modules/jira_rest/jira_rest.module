@@ -1,0 +1,248 @@
+<?php
+
+/**
+ * @file
+ * Jira REST module providing methods for creating, editing,
+ * searching JIRA issues out of Drupal via REST.
+ */
+
+/**
+ * Sets the instance url of jira.
+ */
+function jira_rest_admin() {
+
+  $form = array();
+
+  $form['jira_rest_jirainstanceurl'] = array(
+    '#type' => 'textfield',
+    '#title' => t('URL of the JIRA instance'),
+    '#default_value' => variable_get('jira_rest_jirainstanceurl', 'https://localhost:8443'),
+    '#size' => 80,
+    '#description' => t("Enter the URL of your JIRA instance (e.g. https://yourjira.com:8443)"),
+    '#required' => TRUE,
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Validates correct format of url.
+ */
+function jira_rest_admin_validate($form, &$form_state) {
+  $jira_url = $form_state['values']['jira_rest_jirainstanceurl'];
+  if ((strpos(strrev($jira_url), strrev('/')) === 0)) {
+    form_set_error('jira_rest_jirainstanceurl', t('URL must not end with "/"'));
+  }
+}
+
+/**
+ * Menu entry for administration.
+ */
+function jira_rest_menu() {
+
+  $items = array();
+
+  $items['admin/settings/jira_rest'] = array(
+    'title' => 'Jira REST',
+    'description' => 'Configuration for Jira REST module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('jira_rest_admin'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+
+/**
+ * Helper function for getting curl resource.
+ */
+function jira_rest_get_curl_resource($username, $password, $url) {
+
+  $jira_url = variable_get('jira_rest_jirainstanceurl', 'https://localhost:8443') . '/rest/api/latest';
+
+  $ch = curl_init();
+  curl_setopt($ch, CURLOPT_URL, $jira_url . $url);
+  curl_setopt($ch, CURLOPT_USERPWD, $username . ':' . $password);
+  curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+  curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+  curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
+
+  return $ch;
+}
+
+/**
+ * Decodes cURL response.
+ */
+function jira_rest_curl_execute($ch) {
+  $response = curl_exec($ch);
+  $response_json_decoded = json_decode($response);
+  $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+  switch ($http_code) {
+    case '401':
+      drupal_set_message(t('Jira: 401 Unauthorized'), 'error');
+      break;
+
+    case '403':
+      drupal_set_message(t('Jira: 403 Access Denied'), 'error');
+      break;
+
+    default:
+      if ($http_code >= 400) {
+        drupal_set_message(t('Jira: HTTP status code %code , response was %response', array(
+          '%code' => $http_code,
+          '%response' => $response
+        )), 'error');
+      }
+      break;
+
+  }
+
+  curl_close($ch);
+
+  return $response_json_decoded;
+}
+
+/**
+ * Searches JIRA issues filtered by the given JQL string.
+ *
+ * Usage example returning issues not resolved/closed from PROJECTNAME:
+ *
+ *
+ *  $foundissues = jira_rest_searchissue($username, $password,
+ * "project=PROJECTNAME&status!=RESOLVED&status!=CLOSED");
+ *
+ *
+ * @param string $username
+ *   the Jira username to use for operation
+ * @param string $password
+ *   the Jira password for the given username
+ * @param string $jqlstring
+ *   the JQLString (filtering the searched issues)
+ * @param int $maxresults
+ *   max number of found results that should be returned
+ *
+ * @return array
+ *   the issues found, can be accessed via array->issues
+ *   some examples for getting information from a single issue:
+ *   $ticketkey = $issue->key;
+ *   $parentkey = $issue->fields->parent->key;
+ *   $customfielddata = $issue->fields->customfield_10404;
+ */
+function jira_rest_searchissue($username, $password, $jqlstring, $maxresults = '999') {
+  $ch = jira_rest_get_curl_resource($username, $password, "/search?jql=" . urlencode($jqlstring) . "&maxResults=" . $maxresults);
+  return jira_rest_curl_execute($ch);
+}
+
+
+/**
+ * Creates a JIRA issue.
+ *
+ * example for $issuedata parameter
+ *
+ *
+ *   $issuedata =
+ *    array('fields'=>array(
+ *     'project'=>array('id'=>$projectid,),
+ *     'summary'=>$summary,
+ *     'description'=>$description,
+ *     'priority'=>array('id'=>$priorityid,),
+ *     'issuetype'=>array('id'=>$issuetypeid),
+ *     'customfield_xxx'=>$dataforcustomfield,
+ *     ),
+ *   );
+ *
+ *
+ * @param string $username
+ *   the Jira username to use for operation
+ * @param string $password
+ *   the Jira password for the given username
+ * @param object $issuedata
+ *   array containing data for issue fields
+ *
+ * @return object
+ *   the issue created
+ *   access e.g.
+ *   $createdticket_id = $response_obj->id;
+ *   $createdticket_key = $response_obj->key;
+ */
+function jira_rest_createissue($username, $password, $issuedata) {
+  $ch = jira_rest_get_curl_resource($username, $password, "/issue/");
+  curl_setopt($ch, CURLOPT_POST, TRUE);
+  curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($issuedata));
+  curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-type: application/json'));
+  return jira_rest_curl_execute($ch);
+}
+
+/**
+ * Updates/Edits a JIRA issue.
+ *
+ *
+ *
+ * @param string $username
+ *   the Jira username to use for operation
+ * @param string $password
+ *   the Jira password for the given username
+ * @param object $issuedata
+ *   array containing data for updating/editing issuefields
+ * @param string $issuekey
+ *   the key string identifying issue to be updated
+ *
+ * @return object
+ *   the issue updated
+ */
+function jira_rest_updateticket($username, $password, $issuedata, $issuekey) {
+  $ch = jira_rest_get_curl_resource($username, $password, "/issue/" . $issuekey);
+  curl_setopt($ch, CURLOPT_POST, TRUE);
+  curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+  curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($issuedata));
+  curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-type: application/json'));
+  return jira_rest_curl_execute($ch);
+}
+
+/**
+ * Attaches file to jira issue.
+ */
+function jira_rest_attachfiletoissue($username, $password, $filepath, $issuekey) {
+  $ch = jira_rest_get_curl_resource($username, $password, "/issue/" . $issuekey . "/attachments");
+  curl_setopt($ch, CURLOPT_HTTPHEADER, array('X-Atlassian-Token: nocheck'));
+  curl_setopt($ch, CURLOPT_POSTFIELDS, array('file' => "@$filepath"));
+  return jira_rest_curl_execute($ch);
+}
+
+/**
+ * Close issue with resolution 'fixed'.
+ */
+function jira_rest_closeissuefixed($username, $password, $issuekey, $comment = '') {
+
+  $data = array(
+    "update" => array("comment" => array("add" => array("body" => $comment))),
+    "fields" => array("resolution" => array('name' => 'Fixed')),
+    "transition" => array('id' => '2')
+  );
+
+  $ch = jira_rest_get_curl_resource($username, $password, "/issue/" . $issuekey . "/transitions");
+  curl_setopt($ch, CURLOPT_POST, TRUE);
+  curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+  curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-type: application/json'));
+  jira_rest_curl_execute($ch);
+}
+
+/**
+ * Resolve issue with resolution 'fixed'.
+ */
+function jira_rest_resolveissuefixed($username, $password, $issuekey, $comment = '') {
+
+  $data = array(
+    "update" => array("comment" => array("add" => array("body" => $comment))),
+    "fields" => array("resolution" => array('name' => 'Fixed')),
+    "transition" => array('id' => '5')
+  );
+
+  $ch = jira_rest_get_curl_resource($username, $password, "/issue/" . $issuekey . "/transitions");
+  curl_setopt($ch, CURLOPT_POST, TRUE);
+  curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+  curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-type: application/json'));
+  jira_rest_curl_execute($ch);
+}
+

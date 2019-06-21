@@ -1,0 +1,13 @@
+name = REST Server plist Support
+description = Provides binary and xml plist support for the REST Server.
+package = Web Services
+dependencies[] = rest_server
+dependencies[] = autoload
+core = 6.x
+php = 5.2
+; Information added by drupal.org packaging script on 2011-04-07
+version = "6.x-1.1"
+core = "6.x"
+project = "rest_server_plist"
+datestamp = "1302220616"
+

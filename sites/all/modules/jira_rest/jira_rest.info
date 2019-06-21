@@ -1,0 +1,11 @@
+name = Jira REST
+description = Providing methods for creating, editing, searching JIRA issues out of Drupal via REST.
+core = 6.x
+package = Web Services
+
+; Information added by drupal.org packaging script on 2013-10-28
+version = "6.x-2.0"
+core = "6.x"
+project = "jira_rest"
+datestamp = "1382961326"
+

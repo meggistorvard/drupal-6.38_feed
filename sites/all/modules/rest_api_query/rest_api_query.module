@@ -1,0 +1,440 @@
+<?php
+/**
+ * @file
+ * Exposes a class and functions that help other modules to consume RESTful APIs.
+ */
+
+
+/**
+ * Helper function to build a rest_api_query object.
+ *
+ * rest_api_query class does not currently support use of methods (e.g.
+ * POST /issues/1234/close.json) over a REST API.  Partly because that is not
+ * very RESTful;  The HTTP method is usually more appropriate for this (e.g.
+ * CLOSE /issues/1234.json).  But mostly because Redmine and Toggl do not
+ * implement any methods (using either technique) other than the conventional
+ * CRUD methods (POST, GET, PUT, DELETE).  Patches are welcome.
+ *
+ * @param $schema
+ *    The name of the schema.  E.g "redmine", "toggl".
+ * @param $type String
+ *    The type of object to query; the API resource in plural or singular form.
+ *    Resource types not defined in hook_rest_api_schemas() may also be used, but
+ *    caller must be responsible for the results.
+ *    @see hook_rest_api_schemas()
+ * @param $action String
+ *    One of:
+ *    - "index" or "list" multiple objects (Default)
+ *    - "read", "load" or "show" a single object
+ *    - "head" submit an HTTP request using the HTTP HEAD method.
+ *    - "save" an object (create or update)
+ *    - "create" a new object
+ *    - "update" an existing object
+ *    - "delete" a single object
+ * @param $arg Mixed
+ *    Depending on $action
+ *    - "index" Array: Query string parameters.
+ *    - "load" or "delete" Integer or String: ID of the object.  Some APIS
+ *      support string IDs, such as Redmine projects.
+ *    - "create" or "update" Object: An object with the properties to be set.
+ * @param $get_result Boolean
+ *    Execute the query and return the result, instead of just returning the
+ *    rest_api_query object.
+ *    Note that error messages and codes will not be available to the caller if
+ *    this is TRUE.
+ * @return Mixed
+ *    Depends on $get_result:
+ *    - FALSE (Default): Initialized rest_api_query object, not executed.
+ *    - TRUE: "result" property of executed rest_api_query object. 
+ */
+function rest_api_query($schema, $type, $action = NULL, $arg = NULL, $get_result = TRUE) {
+  rest_api_query_include_subclass($schema);
+  $class = get_rest_api_schema($schema, 'class');
+  $query = new $class();
+
+  // Get the plural form of the type.
+  $type_plural = get_rest_api_type($schema, $type);
+
+  // Allow types that are not declared in hook_rest_api_schemas() to be used.
+  // E.g. get_toggl_user().
+  $query->resource = $type_plural ? $type_plural : $type;
+
+  switch ($action) {
+    // If action is "save", determine whether it is actually "update" or "create".
+    case 'save':
+      $action = isset($arg->id) ? 'update' : 'create';
+      break;
+    // "load", "read" and "show" are synonyms.
+    case 'read':
+    case 'show':
+      $action = 'load';
+      break;
+  }
+
+  // A map of actions to HTTP methods.
+  $methods = array(
+    // Exclude 'index' and 'list' since that is the default action/method (GET).
+    // Exclude 'save', since it means either 'update' or 'create'.
+    'load'   => 'GET',
+    'head'   => 'HEAD',
+    'create' => 'POST',
+    'update' => 'PUT',
+    'delete' => 'DELETE',
+  );
+
+  // If the action is not set or is not supported;
+  if (empty($action) || empty($methods[$action])) {
+    // Assume the action is list.
+    $query->method = 'GET';
+    $query->parameters = empty($arg) ? array() : $arg;
+  }
+  // Otherwise act on a single object.
+  else {
+    // Set the method.
+    $query->method = $methods[$action];
+
+    if ('delete' == $action || 'load' == $action || ('head' == $action && isset($arg))) {
+      // Set the ID of the item to show/delete.
+      $query->identifier = $arg;
+    }
+    else {
+      // Set the data to send.
+      $type_singular = get_rest_api_type($schema, $type, TRUE);
+      $query->data = (Object) array($type_singular => $arg);
+
+      if ('update' == $action) {
+        // Set the ID of the item to update.
+        $query->identifier = $arg->id;
+
+        // RESTful APIs tend not to care if the ID is passed in the data
+        // parameter as well as the path of the URI.
+        // unset($query->data->id);
+      }
+    }
+  }
+
+  // Return the rest_api_query object, or execute it first?
+  if (!$get_result) {
+    return $query;
+  }
+  else {
+    // Execute it and return the result.  Ignore any errors.
+    return $query->alter()->execute()->result;
+  }
+}
+
+
+/**
+ * Include a schema's class definition.
+ *
+ * @param $schema String
+ *    The name of the schema.  E.g "redmine", "toggl".
+ */
+function rest_api_query_include_subclass($schema = NULL) {
+  rest_api_query_include();
+  if ($schema) {
+    $schema = get_rest_api_schema($schema);
+    require_once(drupal_get_path('module', $schema->module) . '/' . $schema->file);
+  }
+}
+
+
+/**
+ * Include a file in rest_api_query module's includes/ directory.
+ *
+ * @param $name String
+ *    The filename, excluding the ".class.inc" suffix.
+ */
+function rest_api_query_include($name = 'rest_api_query', $extension = 'class.inc') {
+  module_load_include($extension, 'rest_api_query', "includes/$name");
+}
+
+
+/**
+ * Include rest_api_query module's Simpletest abstract class.
+ *
+ * This function makes it convenient for such *.test files to include the
+ * RestApiAbstractTestCase class definition before extending it.
+ *
+ * Modules that consume REST APIs may implement unit tests to verify their own
+ * code and/or the REST API service.  RestApiAbstractTestCase provides several
+ * helper functions for Simpletest test case classes to make it easier and faster
+ * to author thorough unit tests.
+ *
+ * For examples, see redmine.test and toggl.test in the Redmine API and Toggl.com
+ * API modules on Drupal.org, respectively.
+ *
+ * @see http://drupal.org/project/redmine
+ * @see http://drupal.org/project/toggl
+ */
+function rest_api_query_include_test_case() {
+  rest_api_query_include('RestApiAbstractTestCase');
+}
+
+
+/**
+ * Get a specific REST API Schema or one component of a sepecific Schema.
+ *
+ * REST API Schemas define a REST API's data model, much like a database scheme
+ * defines a database's data model.  Currently this is simply a list of API
+ * resource types, and some information on where to find the rest_api_query
+ * sub-class.
+ *
+ * @see hook_rest_api_schemas()
+ *
+ * @param $schema String
+ *    The name of the schema.  E.g "redmine", "toggl".
+ * @param $key String
+ *    The compenent to retrieve.  E.g. "types", "file", "class"
+ * @return Mixed
+ *    The schema or the component of the schema.
+ */
+function get_rest_api_schema($schema, $key = NULL) {
+  $schemas = get_rest_api_schemas();
+  if ($key) {
+    return $schemas[$schema]->$key;
+  }
+  return $schemas[$schema];
+}
+
+
+/**
+ * Gets all REST API schemas as defined by hook_rest_api_schemas().
+ *
+ * @see hook_rest_api_schemas()
+ *
+ * @return Array
+ *    An array of standardized schemas, where the "file" and "class" properties
+ *    are all defined.  (They are optional in implementations of
+ *    hook_rest_api_schemas().)
+ */
+function get_rest_api_schemas() {
+  static $schemas;
+
+  if (!isset($schemas)) {
+    $schemas = array();
+
+    // Find modules which declare REST API schemas.
+    foreach (module_implements('rest_api_schemas') as $module) {
+
+      // Get the schemas that the module declares.
+      $func = "{$module}_rest_api_schemas";
+      foreach ($func() as $name => $schema) {
+
+        // Prepare the default values for the schema.
+        $defaults = array(
+          'module' => $module,
+          'id' => $name,
+          'name' => ucwords($name),
+          'class' => "{$name}_rest_api_query",
+          'file' => $schema->class . '.class.inc',
+        );
+
+        // Set the default values for the schema, if they are not already set.
+        foreach ($defaults as $key => $default) {
+          if (empty($schema->{$key})) {
+            $schema->{$key} = $default;
+          }
+        }
+
+        $schemas[$name] = $schema;
+      }
+    }
+
+    // Allow any module to override any other module's schemas.
+    drupal_alter('rest_api_schemas', $schemas);
+  }
+
+  return $schemas;
+}
+
+
+/**
+ * Lists or check object types or convert them between singular & plural forms.
+ *
+ * @param $schema String
+ *    The name of the schema.  E.g "redmine", "toggl".
+ * @param $type String
+ *    The name of the resource type in either singular or plural form.  Use this
+ *    form to check if $type has been declared by hook_rest_api_schemas().
+ * @param $singular Boolean
+ *    Set to TRUE to return the object types in singular form.
+ * @return Mixed
+ *    - If the $type parameter is passed and $type is a valid type, the type is
+ *      returned.  It will be in plural form unless $singular is TRUE.  Use
+ *      this form to convert between singular and plural forms of object types.
+ *    - If the $type parameter is passed and $type is not a valid type, FALSE
+ *      is returned.  Use this to check that an arbitrary type is in fact a
+ *      valid and supported type.
+ *    - If no parameters are set the return value is an associative array of
+ *      Strings; plural form of object types, keyed by singular form.
+ *    - If the $type parameter is not passed (NULL) but $singular is TRUE, then
+ *      an array of the singular forms is returned with numeric keys.
+ */
+function get_rest_api_type($schema, $type = NULL, $singular = FALSE) {
+  // A map of singular to plural type names.
+  $types = get_rest_api_schema($schema, 'types');
+
+  // Does a type need to be validated?
+  if (!isset($type)) {
+    // No.  Just return the types.
+    return $singular ? array_keys($types) : $types;
+  }
+  else {
+    // Yes.  Does it matches any of the keys or values?
+    if (isset($types[$type]) || $type = array_search($type, $types)) {
+      // Yes.  Return the desired form.
+      return $singular ? $type : $types[$type];
+    }
+    // No.
+    return FALSE;
+  }
+}
+
+
+/**
+ * Override the API key to be used by a rest_api_query schema.
+ *
+ * @param $schema String
+ *    The REST API Schema for which to override the API key.
+ *    Leave unset to clear any stored keys.
+ * @param $key String
+ *    The key to use to access the REST API.
+ *    Leave unset to get the active REST API key for the given schema.
+ * @return String
+ *    If $schema AND $key are set;  The previous REST API key for the schema.
+ *    If ONLY $schema is set;  The current REST API key for the schema.
+ *    If $schema is NOT set;  NULL.  The stored keys for all schemas are cleared.
+ */
+function set_active_rest_api_key($schema = NULL, $key = NULL) {
+  static $stored = array();
+  if (!$schema) {
+    $stored = array();
+  }
+  else if ($key) {
+    $return = isset($stored[$schema]) ? $stored[$schema] : NULL;
+    $stored[$schema] = $key;
+    return $return;
+  }
+  else if (isset($stored[$schema])) {
+    return $stored[$schema];
+  }
+}
+
+
+/**
+ * Handles REST API consumption functions; SCHEMA_TYPE_ACTION() & SCHEMA_TYPEs().
+ *
+ * Where:
+ *  - "SCHEMA" is the namespace of the schema, as defined with
+ *    hook_rest_api_schemas();
+ *  - "TYPE" is a type belonging to that schema, also defined in
+ *    hook_rest_api_schemas(), AND;
+ *  - "ACTION" is a valid ACTION, supported by rest_api_query().
+ *
+ * TYPE may be plural or singular, but by convention is singular, unless the
+ * ACTION is "index", in which case TYPE is plural.
+ *
+ * If the ACTION is "index" ("list"), the ACTION may be ommitted from the
+ * function signature, since it is the default ACTION.
+ *
+ * Some example REST API consumption functions for a custom API with types "foo"
+ * and "bar" might be;
+ *  - custom_foos($parameters = array())
+ *  - custom_foo_load($foo_id)
+ *  - custom_foo_save($foo)
+ *  - custom_foo_delete($foo_id)
+ *  - custom_bars($parameters = array())
+ *  - cutsom_bar_load($bar_id)
+ *
+ * REST API consumption functions take one parameter, which depends on
+ * the ACTION:
+ *  - none/"index", Array: The first parameter of SCHEMA_TYPEs() functions is the query
+ *    string parameters.
+ *  - "load" or "delete", Integer or String: The ID of the object to show or
+ *    delete.
+ *  - "save", "create" or "update", Object: An object with the properties to be
+ *    set.
+ *
+ * @param $schema String
+ *    The schema that the REST API consumption function accesses.
+ * @param $stack_offset Integer
+ *    The number of steps up the function stack that rest_api_query_handle_api_function() needs to traverse to find the REST API consumption function.
+ * @return Mixed
+ */
+function rest_api_query_handle_api_function($schema, $stack_offset = 2) {
+  // Get the arguments from the function that called this.
+  $backtrace = debug_backtrace();
+  $api_function = $backtrace[$stack_offset];
+  $function_name = $api_function['function'];
+  $argument = !empty($api_function['args']) ? $api_function['args'][0] : NULL;
+
+  // REST API consumption functions are always namespaced by the schema they
+  // access.  Is the rest of of the function name a valid type for the function's
+  // schema?
+
+  // Remove the schema from the function name.
+  $function_name = str_replace($schema . '_rest_api_', '', $function_name);
+
+  // Is the rest of it a valid type?
+  if (get_rest_api_type($schema, $function_name)) {
+    // Yes;  The default action is "index".
+    $type = $function_name;
+    $action = 'index';
+  }
+  else {
+    // No;  The last part of function name is the action.  Rerieve it.
+    $function_name = explode('_', $function_name);
+    $action = array_pop($function_name);
+
+    // The remainder of the function name is the type.
+    $type = implode('_', $function_name);
+  }
+
+  // If type is not valid, the consumption function is implemented incorrectly.
+  if (!get_rest_api_type($schema, $type)) {
+    $args = array(
+      '!function' => $api_function['function'],
+      '!schema' => $schema,
+      '!type' => $type,
+      '!action' => $action,
+    );
+    $message = t('"!function" is not a valid function name for the "!schema" REST API schema.  Check that; "!schema" is a valid schema; "!type" is a valid type for the !schema schema, and; "!action" is a valid rest_api_query() action.  See also the documentation for hook_rest_api_schemas() and rest_api_query_handle_api_function().', $args);
+    rve($message, t('Rest API consumption function error'));
+  }
+
+  return rest_api_query($schema, $type, $action, $argument, FALSE);
+}
+
+
+/**
+ * Debugs variables via devel module or on the command line if drush.
+ *
+ * @param $variable
+ *    The variable to debug.
+ * @param $name
+ *    The name of $variable, for labelled output.
+ */
+function rest_api_query_var_export($variable, $name = '') {
+  if (!defined('DRUSH_REQUEST_TIME')) {
+    return dpm($variable, $name);
+  }
+
+  // Print to screen.
+  static $counts = array();
+  $counts[$name] = empty($counts[$name]) ? 1 : 1 + $counts[$name];
+  $label = "$name {$counts[$name]}";
+  print "\n===== Start debug: $label =====\n";
+  var_export($variable);
+  print "\n===== End debug: $label =====\n";
+}
+
+
+/**
+ * An alias for rest_api_query_var_export().
+ *
+ * @see rest_api_query_var_export()
+ */
+function rve($variable, $name = '') {
+  return rest_api_query_var_export($variable, $name);
+}
